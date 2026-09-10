@@ -102,7 +102,9 @@ SETUP:
 Determine whether the chart currently offers a technically meaningful trade setup.
 
 Classify quality as:
-STRONG, GOOD, FAIR, WEAK or UNCLEAR.
+STRONG, GOOD, FAIR or WEAK.
+
+Use UNCLEAR ONLY if the chart itself is genuinely unreadable.
 
 Consider:
 - market structure
@@ -115,9 +117,25 @@ Consider:
 - current location of price
 - potential risk/reward
 
-Do not force a trade if there is no valid setup.
+IMPORTANT:
 
-But if the chart provides enough evidence for a reasonable setup, USE IT.
+A directional bias does NOT automatically mean that a trade should be taken.
+
+If the chart clearly has a bullish or bearish bias but there is no clean entry,
+classify the setup as WEAK and explain why the setup is not actionable.
+
+Do NOT turn a clearly readable bearish or bullish chart into UNCLEAR merely
+because entry, stop or target cannot be established with sufficient precision.
+
+Prefer:
+
+"BEARISH BIAS — NO CLEAN ENTRY"
+
+over:
+
+"UNCLEAR"
+
+when the directional evidence is clear but the trade trigger is missing.
 
 ENTRY:
 
@@ -305,6 +323,17 @@ Use UNKNOWN or UNCLEAR only when the information genuinely cannot be determined.
 
 Support and resistance may be [] only when no reliable levels can actually be identified.
 
+When the chart shows a visible swing high, swing low, repeated reaction,
+consolidation boundary or rejection area, treat it as a potentially usable
+support/resistance level.
+
+Do not require multiple perfect touches.
+
+A clearly visible recent swing high or swing low may be reported as
+LOW or MEDIUM importance when it is technically relevant.
+
+Never invent a level that cannot be supported by the visible price scale.
+
 Never invent information.
 
 The final answer must represent what a professional technical analyst could reasonably conclude from the supplied screenshot.
@@ -444,37 +473,75 @@ function completePayload(input: unknown): unknown {
       ? (value.bearish_scenario as Record<string, unknown>)
       : {};
 
-  let bullishProbability = asNumber(probabilities.bullish);
-  let bearishProbability = asNumber(probabilities.bearish);
+let bullishProbability = asNumber(probabilities.bullish);
+let bearishProbability = asNumber(probabilities.bearish);
 
-  if (bullishProbability === null && bearishProbability === null) {
+// Never fabricate 50/50.
+// If the model omitted probabilities, derive a directional bias
+// from the evidence it already extracted.
+if (bullishProbability === null && bearishProbability === null) {
+  const structureClassification = String(market.classification);
+  const trendClassification = String(trend.classification);
+
+  const bearishEvidence =
+    structureClassification === "BEARISH" ? 1 : 0;
+  const bullishEvidence =
+    structureClassification === "BULLISH" ? 1 : 0;
+
+  const bearishTrend =
+    trendClassification === "BEARISH" ? 1 : 0;
+  const bullishTrend =
+    trendClassification === "BULLISH" ? 1 : 0;
+
+  const bearishScore = bearishEvidence + bearishTrend;
+  const bullishScore = bullishEvidence + bullishTrend;
+
+  if (bearishScore > bullishScore) {
+    bearishProbability = 70;
+    bullishProbability = 30;
+  } else if (bullishScore > bearishScore) {
+    bullishProbability = 70;
+    bearishProbability = 30;
+  } else {
+    // Only use neutral probabilities when the chart evidence
+    // genuinely does not establish a directional edge.
     bullishProbability = 50;
     bearishProbability = 50;
-  } else if (bullishProbability === null) {
-    bullishProbability = 100 - (bearishProbability ?? 0);
-  } else if (bearishProbability === null) {
-    bearishProbability = 100 - bullishProbability;
   }
-
-  bullishProbability = Math.max(
-    0,
-    Math.min(100, bullishProbability ?? 50)
-  );
-
+} else if (bullishProbability === null) {
   bearishProbability = Math.max(
     0,
     Math.min(100, bearishProbability ?? 50)
   );
+  bullishProbability = 100 - bearishProbability;
+} else if (bearishProbability === null) {
+  bullishProbability = Math.max(
+    0,
+    Math.min(100, bullishProbability)
+  );
+  bearishProbability = 100 - bullishProbability;
+}
 
-  const probabilityTotal = bullishProbability + bearishProbability;
+bullishProbability = Math.max(
+  0,
+  Math.min(100, bullishProbability)
+);
 
-  if (probabilityTotal > 0 && probabilityTotal !== 100) {
-    bullishProbability =
-      (bullishProbability / probabilityTotal) * 100;
+bearishProbability = Math.max(
+  0,
+  Math.min(100, bearishProbability)
+);
 
-    bearishProbability = 100 - bullishProbability;
-  }
+const probabilityTotal =
+  bullishProbability + bearishProbability;
 
+if (probabilityTotal > 0 && probabilityTotal !== 100) {
+  bullishProbability =
+    (bullishProbability / probabilityTotal) * 100;
+
+  bearishProbability =
+    100 - bullishProbability;
+}
   const normalizeLevels = (
     levels: unknown,
     type: "SUPPORT" | "RESISTANCE"
@@ -580,11 +647,54 @@ function completePayload(input: unknown): unknown {
       bearish: bearishProbability,
     },
 
-    confidence: Math.max(
-      0,
-      Math.min(100, asNumber(value.confidence) ?? 0)
-    ),
+    confidence: (() => {
+  const modelConfidence = asNumber(value.confidence);
 
+  if (modelConfidence !== null) {
+    return Math.max(
+      0,
+      Math.min(100, modelConfidence)
+    );
+  }
+
+  let score = 0;
+
+  if (
+    market.classification === "BULLISH" ||
+    market.classification === "BEARISH"
+  ) {
+    score += 25;
+  }
+
+  if (
+    trend.classification === "BULLISH" ||
+    trend.classification === "BEARISH"
+  ) {
+    score += 20;
+  }
+
+  if (asNumber(value.current_price) !== null) {
+    score += 15;
+  }
+
+  if (asArray(value.support_levels).length > 0) {
+    score += 10;
+  }
+
+  if (asArray(value.resistance_levels).length > 0) {
+    score += 10;
+  }
+
+  if (
+    setup.quality === "STRONG" ||
+    setup.quality === "GOOD" ||
+    setup.quality === "FAIR"
+  ) {
+    score += 20;
+  }
+
+  return Math.max(0, Math.min(100, score));
+})(),
     entry_assessment: {
       quality: ["GOOD", "FAIR", "WEAK", "UNKNOWN"].includes(
         String(entryAssessment.quality)
@@ -703,6 +813,14 @@ function parseAndValidate(
 function hasUsefulAnalysis(
   analysis: AnalysisSchema
 ): boolean {
+  const hasReadableStructure =
+    analysis.market_structure.classification !== "UNCLEAR" &&
+    analysis.market_structure.explanation.trim().length > 20;
+
+  const hasReadableTrend =
+    analysis.trend.classification !== "UNCLEAR" &&
+    analysis.trend.explanation.trim().length > 20;
+
   const hasPrice =
     analysis.current_price !== null;
 
@@ -710,32 +828,48 @@ function hasUsefulAnalysis(
     analysis.support_levels.length > 0 ||
     analysis.resistance_levels.length > 0;
 
-  const hasStructure =
-    analysis.market_structure.classification !== "UNCLEAR" &&
-    analysis.market_structure.explanation !== "UNCLEAR";
-
-  const hasTrend =
-    analysis.trend.classification !== "UNCLEAR" &&
-    analysis.trend.explanation !== "UNCLEAR";
-
-  const hasSetup =
-    analysis.setup.quality !== "UNCLEAR" ||
-    analysis.setup.score !== null;
-
-  const hasScenarioExplanation =
+  const hasScenario =
     analysis.bullish_scenario.description !== "UNCLEAR" ||
     analysis.bearish_scenario.description !== "UNCLEAR";
 
+  const hasScenarioConditions =
+    analysis.bullish_scenario.confirmation !== "UNCLEAR" ||
+    analysis.bearish_scenario.confirmation !== "UNCLEAR";
+
+  const hasDirectionalEvidence =
+    analysis.market_structure.classification === "BULLISH" ||
+    analysis.market_structure.classification === "BEARISH" ||
+    analysis.trend.classification === "BULLISH" ||
+    analysis.trend.classification === "BEARISH";
+
+  /*
+   * A chart with readable structure/trend and directional evidence
+   * is already useful, even when there is no actionable trade.
+   *
+   * This is important: "NO TRADE" is a valid analysis outcome.
+   */
+  if (
+    hasReadableStructure &&
+    hasReadableTrend &&
+    hasDirectionalEvidence &&
+    (hasPrice || hasLevels || hasScenarioConditions)
+  ) {
+    return true;
+  }
+
+  /*
+   * For less directional charts, require more concrete evidence.
+   */
   const evidenceCount = [
     hasPrice,
     hasLevels,
-    hasStructure,
-    hasTrend,
-    hasSetup,
-    hasScenarioExplanation,
+    hasReadableStructure,
+    hasReadableTrend,
+    hasScenario,
+    hasScenarioConditions,
   ].filter(Boolean).length;
 
-  return evidenceCount >= 3;
+  return evidenceCount >= 4;
 }
 
 export async function analyzeChart(
@@ -762,7 +896,7 @@ direction=${options.direction || "AUTO"}
   /*
    * Keep this configurable through Vercel.
    *
-   * Current default remains gpt-4o-mini so your existing deployment
+   * Current default remains gpt-5.6-terra so your existing deployment
    * does not suddenly fail because of an unavailable model.
    *
    * For better chart analysis, set OPENAI_VISION_MODEL in Vercel
@@ -980,6 +1114,17 @@ field, use null or UNKNOWN for that field.
 
 However, do not mark the entire analysis UNCLEAR when the chart contains
 readable candles and price information.
+
+A valid analysis does not require a valid trade.
+
+If the chart has a clear directional structure but lacks a sufficiently
+precise entry/stop/target, preserve the directional analysis and classify
+the setup as WEAK.
+
+Use "NO TRADE" reasoning rather than making the entire analysis UNKNOWN.
+
+Do not erase readable support, resistance, structure, trend or scenarios
+just because one trade field is unavailable.
 
 Return only the complete JSON object.
 `);
