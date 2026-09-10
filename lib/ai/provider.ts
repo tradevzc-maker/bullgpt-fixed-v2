@@ -521,7 +521,6 @@ direction=${options.direction || "AUTO"}
         response_format: {
           type: "json_object",
         },
-        temperature: extraInstruction ? 0 : 0.05,
 
         messages: [
           {
