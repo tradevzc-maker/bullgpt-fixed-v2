@@ -659,7 +659,7 @@ direction=${options.direction || "AUTO"}
    * to a stronger vision-capable model available to your API account.
    */
   const model =
-    process.env.OPENAI_VISION_MODEL || "gpt-4o-mini";
+    process.env.OPENAI_VISION_MODEL || "gpt-5.6-terra";
 
   const imageMessage = {
     type: "image_url" as const,
