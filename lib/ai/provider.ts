@@ -145,9 +145,24 @@ function parseAndValidate(raw: string): AnalysisSchema | null {
     return null;
   }
 
-  const completed = completePayload(parsed);
-  const validated = analysisSchema.safeParse(completed);
-  return validated.success ? validated.data : null;
+ const completed = completePayload(parsed);
+const validated = analysisSchema.safeParse(completed);
+
+if (!validated.success) {
+  console.error(
+    "BULLGPT_SCHEMA_VALIDATION_FAILED:",
+    JSON.stringify(validated.error.issues, null, 2)
+  );
+
+  console.error(
+    "BULLGPT_COMPLETED_PAYLOAD:",
+    JSON.stringify(completed, null, 2)
+  );
+
+  return null;
+}
+
+return validated.data;
 }
 
 export async function analyzeChart(imageDataUrl: string, options: ChartAnalysisOptions): Promise<AnalysisResult> {
