@@ -19,6 +19,16 @@ export interface ChartAnalysisOptions {
  * - Use visible levels only.
  * - If a value truly cannot be read, use null/UNKNOWN.
  * - Do not turn a lack of analysis into a fake valid setup.
+ *
+ * FIX (2026-09): The previous version of this prompt described the required
+ * fields only in prose. The model would often produce reasonable content
+ * but under different key names / shapes (e.g. `confluence` as a plain
+ * array of strings instead of `{ score, factors }`). The strict, silent
+ * normalizer in `completePayload()` would then discard that content and
+ * replace it with UNKNOWN/UNCLEAR/0, even though the model actually did
+ * the analysis correctly. The block below gives the model the EXACT JSON
+ * shape to return so the model can no longer "drift" into an incompatible
+ * structure.
  */
 const instructions = `
 You are BullGPT, a professional technical chart-analysis engine.
@@ -137,209 +147,143 @@ over:
 
 when the directional evidence is clear but the trade trigger is missing.
 
-ENTRY:
+ENTRY / STOP LOSS / TAKE PROFIT:
 
 If a technically reasonable entry area can be derived from the visible chart, provide the numerical entry.
+Place the stop logically beyond the relevant invalidation point (recent swing high/low, or a clearly broken level).
+Identify the next technically meaningful target (visible support/resistance, previous swing high/low, range boundary).
 
-The entry may be based on:
-- current price
-- a visible breakout
-- a retest
-- a rejection
-- a support/resistance reaction
-- a clearly defined price zone
+Do NOT require absolute certainty. Do NOT invent a number when the price scale is genuinely unreadable
+or when no setup exists.
 
-Do NOT require absolute certainty.
+Additionally, ALWAYS provide an assessment of entry, stop loss and take profit quality, even when no
+specific numeric value could be set (in that case explain why, and set quality to "UNKNOWN").
 
-Do NOT invent a number when the price scale is genuinely unreadable.
+SUPPORT / RESISTANCE:
 
-STOP LOSS:
-
-If a setup exists, place the stop logically beyond the relevant invalidation point.
-
-For example:
-- beyond a recent swing high for a short setup
-- beyond a recent swing low for a long setup
-- beyond a clearly broken support/resistance level
-
-The stop must be technically connected to the chart structure.
-
-TAKE PROFIT:
-
-If a setup exists, identify the next technically meaningful target.
-
-Prefer:
-- visible support/resistance
-- previous swing highs/lows
-- range boundaries
-- clearly visible reaction zones
-
-Do not invent an arbitrary target simply to create a trade.
-
-SUPPORT:
-
-Identify visible support levels.
-
-A support level can be based on:
+Identify visible support and resistance levels based on:
 - repeated price reactions
-- swing lows
+- swing lows/highs
 - consolidation boundaries
 - strong rejection areas
 - clearly visible horizontal levels
 
-For each support provide:
-- price
-- type = SUPPORT
-- importance = HIGH, MEDIUM or LOW
-- reason
-
-The reason must explain the visible evidence.
-
-RESISTANCE:
-
-Identify visible resistance levels using the same methodology.
-
-For each resistance provide:
-- price
-- type = RESISTANCE
-- importance = HIGH, MEDIUM or LOW
-- reason
+For each level provide: price, importance (HIGH/MEDIUM/LOW), and a reason describing the visible evidence.
+A clearly visible recent swing high or swing low may be reported as LOW or MEDIUM importance.
+Never invent a level that cannot be supported by the visible price scale.
 
 CURRENT PRICE:
 
-Read the current price from the visible price axis if possible.
-
-Do not invent it.
+Read the current price from the visible price axis if possible. Do not invent it.
 
 SCENARIOS:
 
-Create TWO scenarios:
+Create a bullish and a bearish scenario, each based on the actual chart, each including a concrete
+description, a concrete confirmation condition, a target, and a concrete invalidation condition.
 
-1. Bullish scenario
-2. Bearish scenario
-
-They must be based on the actual chart.
-
-Each scenario must include:
-- probability
-- description
-- confirmation
-- target
-- invalidation
-
-The confirmation must be a concrete chart condition.
-
-Example:
-"Confirmation would be a reclaim and close above the recent lower-high resistance."
-
-The invalidation must also be concrete.
-
-Example:
-"Invalidation occurs if price breaks and closes below the recent swing low."
+Example confirmation: "Confirmation would be a reclaim and close above the recent lower-high resistance."
+Example invalidation: "Invalidation occurs if price breaks and closes below the recent swing low."
 
 Do NOT use "UNCLEAR" for these fields if you can describe a reasonable conditional scenario.
 
 PROBABILITIES:
 
-Bullish and bearish probabilities must total exactly 100.
-
-These are relative scenario estimates, NOT guaranteed predictions.
-
-Do NOT automatically use 50/50.
-
-If the chart clearly favors one direction, reflect that.
-
-Example:
-BULLISH 30
-BEARISH 70
-
-Do not use extreme probabilities unless the evidence is exceptionally strong.
-
-OVERALL ASSESSMENT:
-
-The overall assessment MUST reflect the actual chart.
-
-Do not automatically return UNCLEAR.
-
-If the visible structure and trend clearly favor a direction, summarize that direction.
-
-The assessment should mention:
-- current directional bias
-- main technical reason
-- whether a clean setup exists
+Bullish and bearish probabilities must total exactly 100. These are relative scenario estimates, NOT
+guaranteed predictions. Do NOT automatically use 50/50 — if the chart clearly favors one direction,
+reflect that (e.g. bullish 30 / bearish 70). Only use 50/50 when the evidence is genuinely balanced.
 
 CONFIDENCE:
 
-Confidence should reflect:
-- chart readability
-- quality of visible evidence
-- clarity of market structure
-- clarity of trend
-- quality of support/resistance
-- quality of the potential setup
-
-Do not give high confidence simply because the chart is readable.
+Confidence (0-100) should reflect chart readability and the clarity of structure, trend, support/resistance
+and setup. A confidence of 0 should be reserved for a genuinely unreadable image. If you were able to
+classify market structure and/or trend as BULLISH or BEARISH (i.e. NOT "UNCLEAR"), confidence must be
+at least 40. Do not return 0 confidence together with a non-UNCLEAR market structure or trend — that
+combination is contradictory and will be rejected.
 
 CONFLUENCE:
 
-Identify actual confluences visible on the chart.
+List actual confluences visible on the chart as an array of short strings (e.g. "bearish structure +
+bearish trend", "resistance rejection at prior lower high"). Do not invent indicators that are not visible.
+Provide a confluence score from 0-100 reflecting how many independent confirming factors align.
 
-Possible examples:
-- bearish structure + bearish trend
-- resistance rejection + lower high
-- support + bullish reversal
-- breakout + retest
-- volume expansion
+RISK FLAGS / LIMITATIONS:
 
-Do not invent indicators that are not visible.
+List actual risks visible from the chart, and be honest about what cannot be determined from a static
+screenshot. Do not use limitations as an excuse to avoid analysis.
 
-RISK FLAGS:
+===========================================
+REQUIRED OUTPUT FORMAT — RETURN EXACTLY THIS JSON SHAPE
+===========================================
 
-List actual risks visible from the chart.
+Return ONLY ONE valid JSON object with EXACTLY these top-level keys (no renaming, no nesting changes,
+no extra wrapper object):
 
-Examples:
-- price near major support
-- conflicting structure
-- low momentum
-- range conditions
-- insufficient confirmation
-- poor risk/reward
+{
+  "asset": string | null,
+  "timeframe": string | null,
+  "direction": "LONG" | "SHORT" | "NEUTRAL" | "UNKNOWN",
+  "current_price": number | null,
+  "entry": number | null,
+  "stop_loss": number | null,
+  "take_profit": number | null,
+  "risk_reward": number | null,
+  "market_structure": {
+    "classification": "BULLISH" | "BEARISH" | "RANGING" | "TRANSITIONING" | "UNCLEAR",
+    "score": number | null,
+    "explanation": string
+  },
+  "trend": {
+    "classification": "BULLISH" | "BEARISH" | "NEUTRAL" | "UNCLEAR",
+    "explanation": string
+  },
+  "setup": {
+    "score": number | null,
+    "quality": "STRONG" | "GOOD" | "FAIR" | "WEAK" | "UNCLEAR",
+    "explanation": string
+  },
+  "probabilities": {
+    "bullish": number,
+    "bearish": number
+  },
+  "confidence": number,
+  "entry_assessment": { "quality": "GOOD" | "FAIR" | "WEAK" | "UNKNOWN", "explanation": string },
+  "stop_loss_assessment": { "quality": "GOOD" | "FAIR" | "WEAK" | "UNKNOWN", "explanation": string },
+  "take_profit_assessment": { "quality": "GOOD" | "FAIR" | "WEAK" | "UNKNOWN", "explanation": string },
+  "support_levels": [
+    { "price": number, "importance": "HIGH" | "MEDIUM" | "LOW", "reason": string }
+  ],
+  "resistance_levels": [
+    { "price": number, "importance": "HIGH" | "MEDIUM" | "LOW", "reason": string }
+  ],
+  "confluence": {
+    "score": number | null,
+    "factors": [string]
+  },
+  "risk_flags": [string],
+  "bullish_scenario": {
+    "description": string,
+    "confirmation": string,
+    "target": string | number | null,
+    "invalidation": string
+  },
+  "bearish_scenario": {
+    "description": string,
+    "confirmation": string,
+    "target": string | number | null,
+    "invalidation": string
+  },
+  "overall_assessment": string,
+  "limitations": [string]
+}
 
-LIMITATIONS:
+Do NOT wrap this object in another object. Do NOT rename any key. "confluence" MUST be an object with
+"score" and "factors", never a bare array. support_levels/resistance_levels items must NOT include a
+"type" field (it is added automatically) — just price, importance, reason.
 
-Be honest about what cannot be determined from a static screenshot.
-
-Do not use limitations as an excuse to avoid analysis.
-
-OUTPUT:
-
-Return ONLY ONE valid JSON object.
-
-Return every field required by the BullGPT schema.
-
-Unknown numeric values must be null.
-
-Use UNKNOWN or UNCLEAR only when the information genuinely cannot be determined.
-
-Support and resistance may be [] only when no reliable levels can actually be identified.
-
-When the chart shows a visible swing high, swing low, repeated reaction,
-consolidation boundary or rejection area, treat it as a potentially usable
-support/resistance level.
-
-Do not require multiple perfect touches.
-
-A clearly visible recent swing high or swing low may be reported as
-LOW or MEDIUM importance when it is technically relevant.
-
-Never invent a level that cannot be supported by the visible price scale.
-
-Never invent information.
-
-The final answer must represent what a professional technical analyst could reasonably conclude from the supplied screenshot.
+Support and resistance arrays may be [] only when no reliable levels can actually be identified.
+Unknown numeric values must be null, never a placeholder string.
 
 Before returning the JSON, mentally verify:
-
 1. Does market structure have a concrete explanation?
 2. Does trend have a concrete explanation?
 3. Is there a reasonable overall assessment?
@@ -349,9 +293,11 @@ Before returning the JSON, mentally verify:
 7. If a setup exists, did I provide entry, stop loss and target?
 8. Are bullish and bearish scenarios concrete?
 9. Do probabilities total exactly 100?
-10. Did I avoid inventing information?
+10. Is confidence consistent with market_structure/trend (not 0 when either is non-UNCLEAR)?
+11. Did I use the EXACT key names specified above, with "confluence" as an object, not an array?
+12. Did I avoid inventing information?
 
-Return the complete JSON object now.
+Return the complete JSON object now, matching the shape above exactly.
 `;
 
 function asNumber(value: unknown): number | null {
@@ -415,133 +361,135 @@ function completePayload(input: unknown): unknown {
 
   const market =
     value.market_structure &&
-    typeof value.market_structure === "object"
+    typeof value.market_structure === "object" &&
+    !Array.isArray(value.market_structure)
       ? (value.market_structure as Record<string, unknown>)
       : {};
 
   const trend =
     value.trend &&
-    typeof value.trend === "object"
+    typeof value.trend === "object" &&
+    !Array.isArray(value.trend)
       ? (value.trend as Record<string, unknown>)
       : {};
 
   const setup =
     value.setup &&
-    typeof value.setup === "object"
+    typeof value.setup === "object" &&
+    !Array.isArray(value.setup)
       ? (value.setup as Record<string, unknown>)
       : {};
 
   const probabilities =
     value.probabilities &&
-    typeof value.probabilities === "object"
+    typeof value.probabilities === "object" &&
+    !Array.isArray(value.probabilities)
       ? (value.probabilities as Record<string, unknown>)
       : {};
 
   const entryAssessment =
     value.entry_assessment &&
-    typeof value.entry_assessment === "object"
+    typeof value.entry_assessment === "object" &&
+    !Array.isArray(value.entry_assessment)
       ? (value.entry_assessment as Record<string, unknown>)
       : {};
 
   const stopAssessment =
     value.stop_loss_assessment &&
-    typeof value.stop_loss_assessment === "object"
+    typeof value.stop_loss_assessment === "object" &&
+    !Array.isArray(value.stop_loss_assessment)
       ? (value.stop_loss_assessment as Record<string, unknown>)
       : {};
 
   const targetAssessment =
     value.take_profit_assessment &&
-    typeof value.take_profit_assessment === "object"
+    typeof value.take_profit_assessment === "object" &&
+    !Array.isArray(value.take_profit_assessment)
       ? (value.take_profit_assessment as Record<string, unknown>)
       : {};
 
-  const confluence =
+  /*
+   * FIX: `typeof [] === "object"` is true in JS, so the previous check
+   * silently accepted an array here and then found no `.score` / `.factors`
+   * on it, resulting in an always-empty confluence block. We now:
+   *   1) explicitly exclude arrays from the "object" branch, and
+   *   2) if the model returned confluence as a bare array of strings
+   *      (a very likely mistake given the prose-only instructions),
+   *      treat that array AS the `factors` list instead of discarding it.
+   */
+  let confluence: Record<string, unknown> = {};
+  if (Array.isArray(value.confluence)) {
+    confluence = { factors: value.confluence, score: null };
+  } else if (
     value.confluence &&
     typeof value.confluence === "object"
-      ? (value.confluence as Record<string, unknown>)
-      : {};
+  ) {
+    confluence = value.confluence as Record<string, unknown>;
+  }
 
   const bullish =
     value.bullish_scenario &&
-    typeof value.bullish_scenario === "object"
+    typeof value.bullish_scenario === "object" &&
+    !Array.isArray(value.bullish_scenario)
       ? (value.bullish_scenario as Record<string, unknown>)
       : {};
 
   const bearish =
     value.bearish_scenario &&
-    typeof value.bearish_scenario === "object"
+    typeof value.bearish_scenario === "object" &&
+    !Array.isArray(value.bearish_scenario)
       ? (value.bearish_scenario as Record<string, unknown>)
       : {};
 
-let bullishProbability = asNumber(probabilities.bullish);
-let bearishProbability = asNumber(probabilities.bearish);
+  let bullishProbability = asNumber(probabilities.bullish);
+  let bearishProbability = asNumber(probabilities.bearish);
 
-// Never fabricate 50/50.
-// If the model omitted probabilities, derive a directional bias
-// from the evidence it already extracted.
-if (bullishProbability === null && bearishProbability === null) {
-  const structureClassification = String(market.classification);
-  const trendClassification = String(trend.classification);
+  // Never fabricate 50/50.
+  // If the model omitted probabilities, derive a directional bias
+  // from the evidence it already extracted.
+  if (bullishProbability === null && bearishProbability === null) {
+    const structureClassification = String(market.classification);
+    const trendClassification = String(trend.classification);
 
-  const bearishEvidence =
-    structureClassification === "BEARISH" ? 1 : 0;
-  const bullishEvidence =
-    structureClassification === "BULLISH" ? 1 : 0;
+    const bearishEvidence = structureClassification === "BEARISH" ? 1 : 0;
+    const bullishEvidence = structureClassification === "BULLISH" ? 1 : 0;
 
-  const bearishTrend =
-    trendClassification === "BEARISH" ? 1 : 0;
-  const bullishTrend =
-    trendClassification === "BULLISH" ? 1 : 0;
+    const bearishTrend = trendClassification === "BEARISH" ? 1 : 0;
+    const bullishTrend = trendClassification === "BULLISH" ? 1 : 0;
 
-  const bearishScore = bearishEvidence + bearishTrend;
-  const bullishScore = bullishEvidence + bullishTrend;
+    const bearishScore = bearishEvidence + bearishTrend;
+    const bullishScore = bullishEvidence + bullishTrend;
 
-  if (bearishScore > bullishScore) {
-    bearishProbability = 70;
-    bullishProbability = 30;
-  } else if (bullishScore > bearishScore) {
-    bullishProbability = 70;
-    bearishProbability = 30;
-  } else {
-    // Only use neutral probabilities when the chart evidence
-    // genuinely does not establish a directional edge.
-    bullishProbability = 50;
-    bearishProbability = 50;
+    if (bearishScore > bullishScore) {
+      bearishProbability = 70;
+      bullishProbability = 30;
+    } else if (bullishScore > bearishScore) {
+      bullishProbability = 70;
+      bearishProbability = 30;
+    } else {
+      // Only use neutral probabilities when the chart evidence
+      // genuinely does not establish a directional edge.
+      bullishProbability = 50;
+      bearishProbability = 50;
+    }
+  } else if (bullishProbability === null) {
+    bearishProbability = Math.max(0, Math.min(100, bearishProbability ?? 50));
+    bullishProbability = 100 - bearishProbability;
+  } else if (bearishProbability === null) {
+    bullishProbability = Math.max(0, Math.min(100, bullishProbability));
+    bearishProbability = 100 - bullishProbability;
   }
-} else if (bullishProbability === null) {
-  bearishProbability = Math.max(
-    0,
-    Math.min(100, bearishProbability ?? 50)
-  );
-  bullishProbability = 100 - bearishProbability;
-} else if (bearishProbability === null) {
-  bullishProbability = Math.max(
-    0,
-    Math.min(100, bullishProbability)
-  );
-  bearishProbability = 100 - bullishProbability;
-}
 
-bullishProbability = Math.max(
-  0,
-  Math.min(100, bullishProbability)
-);
+  bullishProbability = Math.max(0, Math.min(100, bullishProbability));
+  bearishProbability = Math.max(0, Math.min(100, bearishProbability));
 
-bearishProbability = Math.max(
-  0,
-  Math.min(100, bearishProbability)
-);
+  const probabilityTotal = bullishProbability + bearishProbability;
 
-const probabilityTotal =
-  bullishProbability + bearishProbability;
+  if (probabilityTotal > 0 && probabilityTotal !== 100) {
+    bullishProbability = (bullishProbability / probabilityTotal) * 100;
+    bearishProbability = 100 - bullishProbability;
+  }
 
-if (probabilityTotal > 0 && probabilityTotal !== 100) {
-  bullishProbability =
-    (bullishProbability / probabilityTotal) * 100;
-
-  bearishProbability =
-    100 - bullishProbability;
-}
   const normalizeLevels = (
     levels: unknown,
     type: "SUPPORT" | "RESISTANCE"
@@ -575,6 +523,80 @@ if (probabilityTotal > 0 && probabilityTotal !== 100) {
     invalidation: asString(scenario.invalidation),
   });
 
+  const marketClassification = [
+    "BULLISH",
+    "BEARISH",
+    "RANGING",
+    "TRANSITIONING",
+    "UNCLEAR",
+  ].includes(String(market.classification))
+    ? market.classification
+    : "UNCLEAR";
+
+  const trendClassificationFinal = [
+    "BULLISH",
+    "BEARISH",
+    "NEUTRAL",
+    "UNCLEAR",
+  ].includes(String(trend.classification))
+    ? trend.classification
+    : "UNCLEAR";
+
+  /*
+   * FIX: `asNumber(value.confidence)` returning 0 is a valid, non-null
+   * number, so the previous code's `modelConfidence !== null` check
+   * accepted a literal 0 and skipped the evidence-based fallback entirely
+   * — even when market_structure/trend were clearly BULLISH/BEARISH.
+   * That mismatch (e.g. "Market structure: BEARISH" + "Confidence: 0%")
+   * is exactly the bug reported.
+   *
+   * Fix: always compute the evidence-based floor, and never return a
+   * final confidence lower than that floor when structure or trend is
+   * directionally classified (matches the instruction we now give the
+   * model: confidence must be >= 40 whenever structure/trend isn't
+   * UNCLEAR).
+   */
+  const derivedConfidenceFloor = (() => {
+    let score = 0;
+
+    if (marketClassification === "BULLISH" || marketClassification === "BEARISH") {
+      score += 25;
+    }
+
+    if (trendClassificationFinal === "BULLISH" || trendClassificationFinal === "BEARISH") {
+      score += 20;
+    }
+
+    if (asNumber(value.current_price) !== null) {
+      score += 15;
+    }
+
+    if (asArray(value.support_levels).length > 0) {
+      score += 10;
+    }
+
+    if (asArray(value.resistance_levels).length > 0) {
+      score += 10;
+    }
+
+    if (["STRONG", "GOOD", "FAIR"].includes(String(setup.quality))) {
+      score += 20;
+    }
+
+    return Math.max(0, Math.min(100, score));
+  })();
+
+  const modelConfidenceRaw = asNumber(value.confidence);
+  const modelConfidence =
+    modelConfidenceRaw === null
+      ? null
+      : Math.max(0, Math.min(100, modelConfidenceRaw));
+
+  const finalConfidence =
+    modelConfidence === null
+      ? derivedConfidenceFloor
+      : Math.max(modelConfidence, derivedConfidenceFloor);
+
   return {
     asset:
       value.asset === null || value.asset === undefined
@@ -599,43 +621,22 @@ if (probabilityTotal > 0 && probabilityTotal !== 100) {
     risk_reward: asNumber(value.risk_reward),
 
     market_structure: {
-      classification: [
-        "BULLISH",
-        "BEARISH",
-        "RANGING",
-        "TRANSITIONING",
-        "UNCLEAR",
-      ].includes(String(market.classification))
-        ? market.classification
-        : "UNCLEAR",
-
+      classification: marketClassification,
       score: asNumber(market.score),
       explanation: asString(market.explanation),
     },
 
     trend: {
-      classification: [
-        "BULLISH",
-        "BEARISH",
-        "NEUTRAL",
-        "UNCLEAR",
-      ].includes(String(trend.classification))
-        ? trend.classification
-        : "UNCLEAR",
-
+      classification: trendClassificationFinal,
       explanation: asString(trend.explanation),
     },
 
     setup: {
       score: asNumber(setup.score),
 
-      quality: [
-        "STRONG",
-        "GOOD",
-        "FAIR",
-        "WEAK",
-        "UNCLEAR",
-      ].includes(String(setup.quality))
+      quality: ["STRONG", "GOOD", "FAIR", "WEAK", "UNCLEAR"].includes(
+        String(setup.quality)
+      )
         ? setup.quality
         : "UNCLEAR",
 
@@ -647,54 +648,8 @@ if (probabilityTotal > 0 && probabilityTotal !== 100) {
       bearish: bearishProbability,
     },
 
-    confidence: (() => {
-  const modelConfidence = asNumber(value.confidence);
+    confidence: finalConfidence,
 
-  if (modelConfidence !== null) {
-    return Math.max(
-      0,
-      Math.min(100, modelConfidence)
-    );
-  }
-
-  let score = 0;
-
-  if (
-    market.classification === "BULLISH" ||
-    market.classification === "BEARISH"
-  ) {
-    score += 25;
-  }
-
-  if (
-    trend.classification === "BULLISH" ||
-    trend.classification === "BEARISH"
-  ) {
-    score += 20;
-  }
-
-  if (asNumber(value.current_price) !== null) {
-    score += 15;
-  }
-
-  if (asArray(value.support_levels).length > 0) {
-    score += 10;
-  }
-
-  if (asArray(value.resistance_levels).length > 0) {
-    score += 10;
-  }
-
-  if (
-    setup.quality === "STRONG" ||
-    setup.quality === "GOOD" ||
-    setup.quality === "FAIR"
-  ) {
-    score += 20;
-  }
-
-  return Math.max(0, Math.min(100, score));
-})(),
     entry_assessment: {
       quality: ["GOOD", "FAIR", "WEAK", "UNKNOWN"].includes(
         String(entryAssessment.quality)
@@ -725,29 +680,19 @@ if (probabilityTotal > 0 && probabilityTotal !== 100) {
       explanation: asString(targetAssessment.explanation),
     },
 
-    support_levels: normalizeLevels(
-      value.support_levels,
-      "SUPPORT"
-    ),
+    support_levels: normalizeLevels(value.support_levels, "SUPPORT"),
 
-    resistance_levels: normalizeLevels(
-      value.resistance_levels,
-      "RESISTANCE"
-    ),
+    resistance_levels: normalizeLevels(value.resistance_levels, "RESISTANCE"),
 
     confluence: {
       score: asNumber(confluence.score),
 
-      factors: asArray<unknown>(
-        confluence.factors
-      ).filter(
+      factors: asArray<unknown>(confluence.factors).filter(
         (item): item is string => typeof item === "string"
       ),
     },
 
-    risk_flags: asArray<unknown>(
-      value.risk_flags
-    ).filter(
+    risk_flags: asArray<unknown>(value.risk_flags).filter(
       (item): item is string => typeof item === "string"
     ),
 
@@ -761,21 +706,15 @@ if (probabilityTotal > 0 && probabilityTotal !== 100) {
       Math.round(bearishProbability)
     ),
 
-    overall_assessment: asString(
-      value.overall_assessment
-    ),
+    overall_assessment: asString(value.overall_assessment),
 
-    limitations: asArray<unknown>(
-      value.limitations
-    ).filter(
+    limitations: asArray<unknown>(value.limitations).filter(
       (item): item is string => typeof item === "string"
     ),
   };
 }
 
-function parseAndValidate(
-  raw: string
-): AnalysisSchema | null {
+function parseAndValidate(raw: string): AnalysisSchema | null {
   let parsed: unknown;
 
   try {
@@ -810,9 +749,7 @@ function parseAndValidate(
  * This prevents the UI from showing a fake "successful" analysis
  * consisting almost entirely of UNKNOWN / UNCLEAR values.
  */
-function hasUsefulAnalysis(
-  analysis: AnalysisSchema
-): boolean {
+function hasUsefulAnalysis(analysis: AnalysisSchema): boolean {
   const hasReadableStructure =
     analysis.market_structure.classification !== "UNCLEAR" &&
     analysis.market_structure.explanation.trim().length > 20;
@@ -821,8 +758,7 @@ function hasUsefulAnalysis(
     analysis.trend.classification !== "UNCLEAR" &&
     analysis.trend.explanation.trim().length > 20;
 
-  const hasPrice =
-    analysis.current_price !== null;
+  const hasPrice = analysis.current_price !== null;
 
   const hasLevels =
     analysis.support_levels.length > 0 ||
@@ -894,16 +830,16 @@ direction=${options.direction || "AUTO"}
 `;
 
   /*
-   * Keep this configurable through Vercel.
+   * FIX: "gpt-5.6-terra" is not a real/existing OpenAI model name. If
+   * OPENAI_VISION_MODEL is not set in Vercel, every request would be sent
+   * to a nonexistent model. Depending on how the OpenAI SDK/account
+   * handles unknown model IDs, this can silently degrade output quality
+   * or fail in ways that are not obvious from the final UI.
    *
-   * Current default remains gpt-5.6-terra so your existing deployment
-   * does not suddenly fail because of an unavailable model.
-   *
-   * For better chart analysis, set OPENAI_VISION_MODEL in Vercel
-   * to a stronger vision-capable model available to your API account.
+   * Default is now a real, currently available vision-capable model.
+   * You can still override it via OPENAI_VISION_MODEL in Vercel.
    */
-  const model =
-    process.env.OPENAI_VISION_MODEL || "gpt-5.6-terra";
+  const model = process.env.OPENAI_VISION_MODEL || "gpt-4o";
 
   const imageMessage = {
     type: "image_url" as const,
@@ -913,28 +849,25 @@ direction=${options.direction || "AUTO"}
     },
   };
 
-  async function requestJson(
-    extraInstruction?: string
-  ): Promise<string | null> {
-    const response =
-      await client.chat.completions.create({
-        model,
-        response_format: {
-          type: "json_object",
+  async function requestJson(extraInstruction?: string): Promise<string | null> {
+    const response = await client.chat.completions.create({
+      model,
+      response_format: {
+        type: "json_object",
+      },
+
+      messages: [
+        {
+          role: "system",
+          content: instructions,
         },
 
-        messages: [
-          {
-            role: "system",
-            content: instructions,
-          },
-
-          {
-            role: "user",
-            content: [
-              {
-                type: "text",
-                text: `
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: `
 ${context}
 
 ${
@@ -963,16 +896,19 @@ Identify:
 
 Do not answer from generic knowledge about the asset.
 Use the screenshot as the primary source of evidence.
+
+Return the JSON object using EXACTLY the key names and shape specified in the
+system instructions ("confluence" as an object with score/factors, etc.).
 `
 }
 `,
-              },
+            },
 
-              imageMessage,
-            ],
-          },
-        ],
-      });
+            imageMessage,
+          ],
+        },
+      ],
+    });
 
     return response.choices[0]?.message.content ?? null;
   }
@@ -984,9 +920,7 @@ Use the screenshot as the primary source of evidence.
   const raw = await requestJson();
 
   if (!raw) {
-    throw new Error(
-      "The analysis service returned no result."
-    );
+    throw new Error("The analysis service returned no result.");
   }
 
   let validated = parseAndValidate(raw);
@@ -1001,36 +935,24 @@ Use the screenshot as the primary source of evidence.
     try {
       parsedForIssues = JSON.parse(raw);
     } catch {
-      throw new Error(
-        "The analysis service returned unreadable JSON."
-      );
+      throw new Error("The analysis service returned unreadable JSON.");
     }
 
-    const normalized =
-      completePayload(parsedForIssues);
+    const normalized = completePayload(parsedForIssues);
 
-    const issues =
-      analysisSchema.safeParse(normalized);
+    const issues = analysisSchema.safeParse(normalized);
 
     const details = issues.success
       ? "The response did not satisfy the required analysis structure."
       : issues.error.issues
           .slice(0, 12)
           .map(
-            (issue) =>
-              `${issue.path.join(".") || "root"}: ${issue.message}`
+            (issue) => `${issue.path.join(".") || "root"}: ${issue.message}`
           )
           .join("; ");
 
-    console.error(
-      "BULLGPT_FIRST_RESPONSE:",
-      raw
-    );
-
-    console.error(
-      "BULLGPT_VALIDATION_DETAILS:",
-      details
-    );
+    console.error("BULLGPT_FIRST_RESPONSE:", raw);
+    console.error("BULLGPT_VALIDATION_DETAILS:", details);
 
     const retryRaw = await requestJson(`
 Your previous chart-analysis response could not be accepted.
@@ -1042,7 +964,10 @@ Analyze the IMAGE again.
 
 Do not merely repeat the previous answer.
 
-Read the visible chart carefully and return a complete JSON object.
+Read the visible chart carefully and return a complete JSON object using
+EXACTLY the key names and nesting specified in the system instructions.
+In particular: "confluence" MUST be an object { "score": ..., "factors": [...] },
+never a bare array.
 
 Pay particular attention to:
 - current visible price
@@ -1065,6 +990,7 @@ Do not invent numbers.
 
 All required fields must still be present.
 Probabilities must total 100.
+Confidence must not be 0 unless market_structure and trend are both UNCLEAR.
 Return JSON only.
 `);
 
@@ -1126,12 +1052,12 @@ Use "NO TRADE" reasoning rather than making the entire analysis UNKNOWN.
 Do not erase readable support, resistance, structure, trend or scenarios
 just because one trade field is unavailable.
 
-Return only the complete JSON object.
+Return only the complete JSON object, using EXACTLY the required key names
+and shape from the system instructions.
 `);
 
     if (retryRaw) {
-      const retryValidated =
-        parseAndValidate(retryRaw);
+      const retryValidated = parseAndValidate(retryRaw);
 
       if (retryValidated) {
         validated = retryValidated;
@@ -1139,10 +1065,7 @@ Return only the complete JSON object.
     }
   }
 
-  console.log(
-    "BULLGPT_FINAL_ANALYSIS:",
-    JSON.stringify(validated, null, 2)
-  );
+  console.log("BULLGPT_FINAL_ANALYSIS:", JSON.stringify(validated, null, 2));
 
   return normalizeAnalysis(validated);
 }
